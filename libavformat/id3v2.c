@@ -590,7 +590,7 @@ static void read_apic(AVFormatContext *s, AVIOContext *pb, int taglen,
                       int isv34)
 {
     int enc, pic_type;
-    char mimetype[64];
+    char mimetype[64] = {0};
     const CodecMime *mime     = ff_id3v2_mime_tags;
     enum AVCodecID id         = AV_CODEC_ID_NONE;
     ID3v2ExtraMetaAPIC *apic  = NULL;
@@ -612,7 +612,9 @@ static void read_apic(AVFormatContext *s, AVIOContext *pb, int taglen,
     if (isv34) {
         taglen -= avio_get_str(pb, taglen, mimetype, sizeof(mimetype));
     } else {
-        avio_read(pb, mimetype, 3);
+        if (avio_read(pb, mimetype, 3) < 0)
+            goto fail;
+
         mimetype[3] = 0;
         taglen    -= 3;
     }
@@ -1260,8 +1262,6 @@ int ff_id3v2_parse_priv_dict(AVDictionary **metadata, ID3v2ExtraMeta **extra_met
             }
 
             if ((ret = av_dict_set(metadata, key, escaped, dict_flags)) < 0) {
-                av_free(key);
-                av_free(escaped);
                 return ret;
             }
         }

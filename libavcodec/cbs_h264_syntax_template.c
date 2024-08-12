@@ -539,6 +539,12 @@ static int FUNC(sei_pic_timestamp)(CodedBitstreamContext *ctx, RWContext *rw,
     }
 
     sps = h264->active_sps;
+    if (!sps) {
+        av_log(ctx->log_ctx, AV_LOG_ERROR,
+               "No active SPS for pic_timestamp.\n");
+        return AVERROR_INVALIDDATA;
+    }
+
     if (sps->vui.nal_hrd_parameters_present_flag)
         time_offset_length = sps->vui.nal_hrd_parameters.time_offset_length;
     else if (sps->vui.vcl_hrd_parameters_present_flag)
@@ -650,7 +656,7 @@ static int FUNC(sei_user_data_registered)(CodedBitstreamContext *ctx, RWContext 
     *payload_size = i + current->data_length;
 #endif
 
-    allocate(current->data, current->data_length);
+    allocate(current->data, current->data_length + AV_INPUT_BUFFER_PADDING_SIZE);
     for (j = 0; j < current->data_length; j++)
         xu(8, itu_t_t35_payload_byte, current->data[j], 0x00, 0xff);
 
@@ -1234,7 +1240,7 @@ static int FUNC(slice_header)(CodedBitstreamContext *ctx, RWContext *rw,
                    (sps->pic_height_in_map_units_minus1 + 1);
         max = (pic_size + pps->slice_group_change_rate_minus1) /
               (pps->slice_group_change_rate_minus1 + 1);
-        bits = av_log2(2 * max - 1);
+        bits = av_ceil_log2(max + 1);
 
         u(bits, slice_group_change_cycle, 0, max);
     }

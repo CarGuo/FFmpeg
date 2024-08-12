@@ -389,7 +389,7 @@ static int ftp_file_size(FTPContext *s)
     static const int size_codes[] = {213, 0};
 
     snprintf(command, sizeof(command), "SIZE %s\r\n", s->path);
-    if (ftp_send_command(s, command, size_codes, &res) == 213 && res) {
+    if (ftp_send_command(s, command, size_codes, &res) == 213 && res && strlen(res) > 4) {
         s->filesize = strtoll(&res[4], NULL, 10);
     } else {
         s->filesize = -1;
@@ -783,13 +783,13 @@ static int ftp_read(URLContext *h, unsigned char *buf, int size)
     if (s->state == DISCONNECTED) {
         /* optimization */
         if (s->position >= s->filesize)
-            return 0;
+            return AVERROR_EOF;
         if ((err = ftp_connect_data_connection(h)) < 0)
             return err;
     }
     if (s->state == READY) {
         if (s->position >= s->filesize)
-            return 0;
+            return AVERROR_EOF;
         if ((err = ftp_retrieve(s)) < 0)
             return err;
     }

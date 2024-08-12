@@ -578,6 +578,10 @@ static int decode_ihdr_chunk(AVCodecContext *avctx, PNGDecContext *s,
     }
     s->color_type       = bytestream2_get_byte(&s->gb);
     s->compression_type = bytestream2_get_byte(&s->gb);
+    if (s->compression_type) {
+        av_log(avctx, AV_LOG_ERROR, "Invalid compression method %d\n", s->compression_type);
+        goto error;
+    }
     s->filter_type      = bytestream2_get_byte(&s->gb);
     s->interlace_type   = bytestream2_get_byte(&s->gb);
     bytestream2_skip(&s->gb, 4); /* crc */
@@ -969,6 +973,11 @@ static int decode_fctl_chunk(AVCodecContext *avctx, PNGDecContext *s,
         return AVERROR_INVALIDDATA;
     }
 
+    if (s->pic_state & PNG_IDAT) {
+        av_log(avctx, AV_LOG_ERROR, "fctl after IDAT\n");
+        return AVERROR_INVALIDDATA;
+    }
+
     s->last_w = s->cur_w;
     s->last_h = s->cur_h;
     s->last_x_offset = s->x_offset;
@@ -1238,7 +1247,7 @@ static int decode_frame_common(AVCodecContext *avctx, PNGDecContext *s,
         case MKTAG('f', 'd', 'A', 'T'):
             if (!CONFIG_APNG_DECODER || avctx->codec_id != AV_CODEC_ID_APNG)
                 goto skip_tag;
-            if (!decode_next_dat) {
+            if (!decode_next_dat || length < 4) {
                 ret = AVERROR_INVALIDDATA;
                 goto fail;
             }
@@ -1286,7 +1295,7 @@ static int decode_frame_common(AVCodecContext *avctx, PNGDecContext *s,
             break;
         }
         case MKTAG('i', 'C', 'C', 'P'): {
-            if (decode_iccp_chunk(s, length, p) < 0)
+            if ((ret = decode_iccp_chunk(s, length, p)) < 0)
                 goto fail;
             break;
         }
@@ -1387,6 +1396,9 @@ exit_loop:
             if (CONFIG_PNG_DECODER && avctx->codec_id != AV_CODEC_ID_APNG)
                 handle_p_frame_png(s, p);
             else if (CONFIG_APNG_DECODER &&
+                     s->previous_picture.f->width == p->width  &&
+                     s->previous_picture.f->height== p->height &&
+                     s->previous_picture.f->format== p->format &&
                      avctx->codec_id == AV_CODEC_ID_APNG &&
                      (ret = handle_p_frame_apng(avctx, s, p)) < 0)
                 goto fail;

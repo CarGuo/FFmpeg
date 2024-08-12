@@ -479,7 +479,10 @@ static int cbs_h2645_fragment_add_nals(CodedBitstreamContext *ctx,
         // Remove trailing zeroes.
         while (size > 0 && nal->data[size - 1] == 0)
             --size;
-        av_assert0(size > 0);
+        if (size == 0) {
+            av_log(ctx->log_ctx, AV_LOG_VERBOSE, "Discarding empty 0 NAL unit\n");
+            continue;
+        }
 
         data = av_malloc(size + AV_INPUT_BUFFER_PADDING_SIZE);
         if (!data)
@@ -663,7 +666,7 @@ static int cbs_h26 ## h26n ## _replace_ ## ps_var(CodedBitstreamContext *ctx, \
 { \
     CodedBitstreamH26 ## h26n ## Context *priv = ctx->priv_data; \
     unsigned int id = ps_var->id_element; \
-    if (id > FF_ARRAY_ELEMS(priv->ps_var)) { \
+    if (id >= FF_ARRAY_ELEMS(priv->ps_var)) { \
         av_log(ctx->log_ctx, AV_LOG_ERROR, "Invalid " #ps_name \
                " id : %d.\n", id); \
         return AVERROR_INVALIDDATA; \
@@ -765,15 +768,11 @@ static int cbs_h264_read_nal_unit(CodedBitstreamContext *ctx,
             if (err < 0)
                 return err;
 
+            if (!cbs_h2645_read_more_rbsp_data(&gbc))
+                return AVERROR_INVALIDDATA;
+
             pos = get_bits_count(&gbc);
             len = unit->data_size;
-            if (!unit->data[len - 1]) {
-                int z;
-                for (z = 0; z < len && !unit->data[len - z - 1]; z++);
-                av_log(ctx->log_ctx, AV_LOG_DEBUG, "Deleted %d trailing zeroes "
-                       "from slice data.\n", z);
-                len -= z;
-            }
 
             slice->data_size = len - pos / 8;
             slice->data_ref  = av_buffer_alloc(slice->data_size +
@@ -935,15 +934,11 @@ static int cbs_h265_read_nal_unit(CodedBitstreamContext *ctx,
             if (err < 0)
                 return err;
 
+            if (!cbs_h2645_read_more_rbsp_data(&gbc))
+                return AVERROR_INVALIDDATA;
+
             pos = get_bits_count(&gbc);
             len = unit->data_size;
-            if (!unit->data[len - 1]) {
-                int z;
-                for (z = 0; z < len && !unit->data[len - z - 1]; z++);
-                av_log(ctx->log_ctx, AV_LOG_DEBUG, "Deleted %d trailing zeroes "
-                       "from slice data.\n", z);
-                len -= z;
-            }
 
             slice->data_size = len - pos / 8;
             slice->data_ref  = av_buffer_alloc(slice->data_size +

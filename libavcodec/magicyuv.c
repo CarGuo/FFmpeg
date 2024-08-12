@@ -240,6 +240,8 @@ static int magy_decode_slice10(AVCodecContext *avctx, void *tdata,
 
         dst = (uint16_t *)p->data[i] + j * sheight * stride;
         if (flags & 1) {
+            if (get_bits_left(&gb) < bps * width * height)
+                return AVERROR_INVALIDDATA;
             for (k = 0; k < height; k++) {
                 for (x = 0; x < width; x++)
                     dst[x] = get_bits(&gb, bps);
@@ -368,6 +370,8 @@ static int magy_decode_slice(AVCodecContext *avctx, void *tdata,
 
         dst = p->data[i] + j * sheight * stride;
         if (flags & 1) {
+            if (get_bits_left(&gb) < 8* width * height)
+                return AVERROR_INVALIDDATA;
             for (k = 0; k < height; k++) {
                 for (x = 0; x < width; x++)
                     dst[x] = get_bits(&gb, 8);
@@ -664,6 +668,17 @@ static int magy_decode_frame(AVCodecContext *avctx, void *data,
         av_log(avctx, AV_LOG_ERROR,
                "invalid number of slices: %d\n", s->nb_slices);
         return AVERROR_INVALIDDATA;
+    }
+
+    if (s->interlaced) {
+        if ((s->slice_height >> s->vshift[1]) < 2) {
+            av_log(avctx, AV_LOG_ERROR, "impossible slice height\n");
+            return AVERROR_INVALIDDATA;
+        }
+        if ((avctx->coded_height % s->slice_height) && ((avctx->coded_height % s->slice_height) >> s->vshift[1]) < 2) {
+            av_log(avctx, AV_LOG_ERROR, "impossible height\n");
+            return AVERROR_INVALIDDATA;
+        }
     }
 
     for (i = 0; i < s->planes; i++) {

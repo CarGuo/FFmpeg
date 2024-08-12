@@ -765,6 +765,7 @@ static inline int mxf_read_utf16_string(AVIOContext *pb, int size, char** str, i
         return AVERROR(EINVAL);
 
     buf_size = size + size / 2 + 1;
+    av_free(*str);
     *str = av_malloc(buf_size);
     if (!*str)
         return AVERROR(ENOMEM);
@@ -2085,7 +2086,7 @@ static int mxf_parse_structural_metadata(MXFContext *mxf)
                 MXFEssenceContainerData *essence_data;
 
                 if (!(essence_data = mxf_resolve_strong_ref(mxf, &mxf->essence_container_data_refs[k], EssenceContainerData))) {
-                    av_log(mxf, AV_LOG_TRACE, "could not resolve essence container data strong ref\n");
+                    av_log(mxf->fc, AV_LOG_TRACE, "could not resolve essence container data strong ref\n");
                     continue;
                 }
                 if (!memcmp(component->source_package_ul, essence_data->package_ul, sizeof(UID)) && !memcmp(component->source_package_uid, essence_data->package_uid, sizeof(UID))) {
@@ -3387,6 +3388,7 @@ static int mxf_read_close(AVFormatContext *s)
     for (i = 0; i < mxf->metadata_sets_count; i++) {
         mxf_free_metadataset(mxf->metadata_sets + i, 1);
     }
+    mxf->metadata_sets_count = 0;
     av_freep(&mxf->partitions);
     av_freep(&mxf->metadata_sets);
     av_freep(&mxf->aesc);

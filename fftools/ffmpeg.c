@@ -561,6 +561,7 @@ static void ffmpeg_cleanup(int ret)
         ost->audio_channels_mapped = 0;
 
         av_dict_free(&ost->sws_dict);
+        av_dict_free(&ost->swr_opts);
 
         avcodec_free_context(&ost->enc_ctx);
         avcodec_parameters_free(&ost->ref_par);
@@ -2121,9 +2122,6 @@ static int ifilter_send_frame(InputFilter *ifilter, AVFrame *frame)
 
     /* determine if the parameters for this input changed */
     need_reinit = ifilter->format != frame->format;
-    if (!!ifilter->hw_frames_ctx != !!frame->hw_frames_ctx ||
-        (ifilter->hw_frames_ctx && ifilter->hw_frames_ctx->data != frame->hw_frames_ctx->data))
-        need_reinit = 1;
 
     switch (ifilter->ist->st->codecpar->codec_type) {
     case AVMEDIA_TYPE_AUDIO:
@@ -2136,6 +2134,13 @@ static int ifilter_send_frame(InputFilter *ifilter, AVFrame *frame)
                        ifilter->height != frame->height;
         break;
     }
+
+    if (!ifilter->ist->reinit_filters && fg->graph)
+        need_reinit = 0;
+
+    if (!!ifilter->hw_frames_ctx != !!frame->hw_frames_ctx ||
+        (ifilter->hw_frames_ctx && ifilter->hw_frames_ctx->data != frame->hw_frames_ctx->data))
+        need_reinit = 1;
 
     if (need_reinit) {
         ret = ifilter_parameters_from_frame(ifilter, frame);
@@ -2696,8 +2701,12 @@ static int process_input_packet(InputStream *ist, const AVPacket *pkt, int no_eo
         ist->dts = ist->next_dts;
         switch (ist->dec_ctx->codec_type) {
         case AVMEDIA_TYPE_AUDIO:
-            ist->next_dts += ((int64_t)AV_TIME_BASE * ist->dec_ctx->frame_size) /
-                             ist->dec_ctx->sample_rate;
+            if (ist->dec_ctx->sample_rate) {
+                ist->next_dts += ((int64_t)AV_TIME_BASE * ist->dec_ctx->frame_size) /
+                                  ist->dec_ctx->sample_rate;
+            } else {
+                ist->next_dts += av_rescale_q(pkt->duration, ist->st->time_base, AV_TIME_BASE_Q);
+            }
             break;
         case AVMEDIA_TYPE_VIDEO:
             if (ist->framerate.num) {
@@ -4011,49 +4020,63 @@ static void *input_thread(void *arg)
     return NULL;
 }
 
+static void free_input_thread(int i)
+{
+    InputFile *f = input_files[i];
+    AVPacket pkt;
+
+    if (!f || !f->in_thread_queue)
+        return;
+    av_thread_message_queue_set_err_send(f->in_thread_queue, AVERROR_EOF);
+    while (av_thread_message_queue_recv(f->in_thread_queue, &pkt, 0) >= 0)
+        av_packet_unref(&pkt);
+
+    pthread_join(f->thread, NULL);
+    f->joined = 1;
+    av_thread_message_queue_free(&f->in_thread_queue);
+}
+
 static void free_input_threads(void)
 {
     int i;
 
-    for (i = 0; i < nb_input_files; i++) {
-        InputFile *f = input_files[i];
-        AVPacket pkt;
+    for (i = 0; i < nb_input_files; i++)
+        free_input_thread(i);
+}
 
-        if (!f || !f->in_thread_queue)
-            continue;
-        av_thread_message_queue_set_err_send(f->in_thread_queue, AVERROR_EOF);
-        while (av_thread_message_queue_recv(f->in_thread_queue, &pkt, 0) >= 0)
-            av_packet_unref(&pkt);
+static int init_input_thread(int i)
+{
+    int ret;
+    InputFile *f = input_files[i];
 
-        pthread_join(f->thread, NULL);
-        f->joined = 1;
+    if (nb_input_files == 1)
+        return 0;
+
+    if (f->ctx->pb ? !f->ctx->pb->seekable :
+        strcmp(f->ctx->iformat->name, "lavfi"))
+        f->non_blocking = 1;
+    ret = av_thread_message_queue_alloc(&f->in_thread_queue,
+                                        f->thread_queue_size, sizeof(AVPacket));
+    if (ret < 0)
+        return ret;
+
+    if ((ret = pthread_create(&f->thread, NULL, input_thread, f))) {
+        av_log(NULL, AV_LOG_ERROR, "pthread_create failed: %s. Try to increase `ulimit -v` or decrease `ulimit -s`.\n", strerror(ret));
         av_thread_message_queue_free(&f->in_thread_queue);
+        return AVERROR(ret);
     }
+
+    return 0;
 }
 
 static int init_input_threads(void)
 {
     int i, ret;
 
-    if (nb_input_files == 1)
-        return 0;
-
     for (i = 0; i < nb_input_files; i++) {
-        InputFile *f = input_files[i];
-
-        if (f->ctx->pb ? !f->ctx->pb->seekable :
-            strcmp(f->ctx->iformat->name, "lavfi"))
-            f->non_blocking = 1;
-        ret = av_thread_message_queue_alloc(&f->in_thread_queue,
-                                            f->thread_queue_size, sizeof(AVPacket));
+        ret = init_input_thread(i);
         if (ret < 0)
             return ret;
-
-        if ((ret = pthread_create(&f->thread, NULL, input_thread, f))) {
-            av_log(NULL, AV_LOG_ERROR, "pthread_create failed: %s. Try to increase `ulimit -v` or decrease `ulimit -s`.\n", strerror(ret));
-            av_thread_message_queue_free(&f->in_thread_queue);
-            return AVERROR(ret);
-        }
     }
     return 0;
 }
@@ -4171,7 +4194,8 @@ static int seek_to_start(InputFile *ifile, AVFormatContext *is)
             ifile->time_base = ist->st->time_base;
         /* the total duration of the stream, max_pts - min_pts is
          * the duration of the stream without the last frame */
-        duration += ist->max_pts - ist->min_pts;
+        if (ist->max_pts > ist->min_pts && ist->max_pts - (uint64_t)ist->min_pts < INT64_MAX - duration)
+            duration += ist->max_pts - ist->min_pts;
         ifile->time_base = duration_max(duration, &ifile->duration, ist->st->time_base,
                                         ifile->time_base);
     }
@@ -4195,7 +4219,7 @@ static int process_input(int file_index)
     AVFormatContext *is;
     InputStream *ist;
     AVPacket pkt;
-    int ret, i, j;
+    int ret, thread_ret, i, j;
     int64_t duration;
     int64_t pkt_dts;
 
@@ -4218,7 +4242,15 @@ static int process_input(int file_index)
                 avcodec_flush_buffers(avctx);
             }
         }
+#if HAVE_THREADS
+        free_input_thread(file_index);
+#endif
         ret = seek_to_start(ifile, is);
+#if HAVE_THREADS
+        thread_ret = init_input_thread(file_index);
+        if (thread_ret < 0)
+            return thread_ret;
+#endif
         if (ret < 0)
             av_log(NULL, AV_LOG_WARNING, "Seek to start failed.\n");
         else

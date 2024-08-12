@@ -170,8 +170,8 @@ static const AVOption options[] = {
      {.i64 = 1}, 0, 1, AV_OPT_FLAG_DECODING_PARAM },
     {"ts_packetsize", "output option carrying the raw packet size", offsetof(MpegTSContext, raw_packet_size), AV_OPT_TYPE_INT,
      {.i64 = 0}, 0, 0, AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY },
-    {"scan_all_pmts",   "scan and combine all PMTs", offsetof(MpegTSContext, scan_all_pmts), AV_OPT_TYPE_BOOL,
-     { .i64 =  -1}, -1, 1,  AV_OPT_FLAG_DECODING_PARAM },
+    {"scan_all_pmts", "scan and combine all PMTs", offsetof(MpegTSContext, scan_all_pmts), AV_OPT_TYPE_BOOL,
+     {.i64 = -1}, -1, 1, AV_OPT_FLAG_DECODING_PARAM },
     {"skip_changes", "skip changing / adding streams / programs", offsetof(MpegTSContext, skip_changes), AV_OPT_TYPE_BOOL,
      {.i64 = 0}, 0, 1, 0 },
     {"skip_clear", "skip clearing programs", offsetof(MpegTSContext, skip_clear), AV_OPT_TYPE_BOOL,
@@ -391,7 +391,8 @@ static void write_section_data(MpegTSContext *ts, MpegTSFilter *tss1,
                                const uint8_t *buf, int buf_size, int is_start)
 {
     MpegTSSectionFilter *tss = &tss1->u.section_filter;
-    int len;
+    uint8_t *cur_section_buf = NULL;
+    int len, offset;
 
     if (is_start) {
         memcpy(tss->section_buf, buf, buf_size);
@@ -401,42 +402,54 @@ static void write_section_data(MpegTSContext *ts, MpegTSFilter *tss1,
     } else {
         if (tss->end_of_section_reached)
             return;
-        len = 4096 - tss->section_index;
+        len = MAX_SECTION_SIZE - tss->section_index;
         if (buf_size < len)
             len = buf_size;
         memcpy(tss->section_buf + tss->section_index, buf, len);
         tss->section_index += len;
     }
 
-    /* compute section length if possible */
-    if (tss->section_h_size == -1 && tss->section_index >= 3) {
-        len = (AV_RB16(tss->section_buf + 1) & 0xfff) + 3;
-        if (len > 4096)
-            return;
-        tss->section_h_size = len;
-    }
-
-    if (tss->section_h_size != -1 &&
-        tss->section_index >= tss->section_h_size) {
-        int crc_valid = 1;
-        tss->end_of_section_reached = 1;
-
-        if (tss->check_crc) {
-            crc_valid = !av_crc(av_crc_get_table(AV_CRC_32_IEEE), -1, tss->section_buf, tss->section_h_size);
-            if (tss->section_h_size >= 4)
-                tss->crc = AV_RB32(tss->section_buf + tss->section_h_size - 4);
-
-            if (crc_valid) {
-                ts->crc_validity[ tss1->pid ] = 100;
-            }else if (ts->crc_validity[ tss1->pid ] > -10) {
-                ts->crc_validity[ tss1->pid ]--;
-            }else
-                crc_valid = 2;
+    offset = 0;
+    cur_section_buf = tss->section_buf;
+    while (cur_section_buf - tss->section_buf < MAX_SECTION_SIZE && cur_section_buf[0] != 0xff) {
+        /* compute section length if possible */
+        if (tss->section_h_size == -1 && tss->section_index - offset >= 3) {
+            len = (AV_RB16(cur_section_buf + 1) & 0xfff) + 3;
+            if (len > MAX_SECTION_SIZE)
+                return;
+            tss->section_h_size = len;
         }
-        if (crc_valid) {
-            tss->section_cb(tss1, tss->section_buf, tss->section_h_size);
-            if (crc_valid != 1)
-                tss->last_ver = -1;
+
+        if (tss->section_h_size != -1 &&
+            tss->section_index >= offset + tss->section_h_size) {
+            int crc_valid = 1;
+            tss->end_of_section_reached = 1;
+
+            if (tss->check_crc) {
+                crc_valid = !av_crc(av_crc_get_table(AV_CRC_32_IEEE), -1, cur_section_buf, tss->section_h_size);
+                if (tss->section_h_size >= 4)
+                    tss->crc = AV_RB32(cur_section_buf + tss->section_h_size - 4);
+
+                if (crc_valid) {
+                    ts->crc_validity[ tss1->pid ] = 100;
+                }else if (ts->crc_validity[ tss1->pid ] > -10) {
+                    ts->crc_validity[ tss1->pid ]--;
+                }else
+                    crc_valid = 2;
+            }
+            if (crc_valid) {
+                tss->section_cb(tss1, cur_section_buf, tss->section_h_size);
+                if (crc_valid != 1)
+                    tss->last_ver = -1;
+            }
+
+            cur_section_buf += tss->section_h_size;
+            offset += tss->section_h_size;
+            tss->section_h_size = -1;
+        } else {
+            tss->section_h_size = -1;
+            tss->end_of_section_reached = 0;
+            break;
         }
     }
 }
@@ -478,7 +491,7 @@ static MpegTSFilter *mpegts_open_section_filter(MpegTSContext *ts,
     sec = &filter->u.section_filter;
     sec->section_cb  = section_cb;
     sec->opaque      = opaque;
-    sec->section_buf = av_malloc(MAX_SECTION_SIZE);
+    sec->section_buf = av_mallocz(MAX_SECTION_SIZE);
     sec->check_crc   = check_crc;
     sec->last_ver    = -1;
 
@@ -887,7 +900,7 @@ static void new_data_packet(const uint8_t *buffer, int len, AVPacket *pkt)
 
 static int new_pes_packet(PESContext *pes, AVPacket *pkt)
 {
-    char *sd;
+    uint8_t *sd;
 
     av_init_packet(pkt);
 
@@ -1733,10 +1746,10 @@ int ff_parse_mpeg2_descriptor(AVFormatContext *fc, AVStream *st, int stream_type
                     }
                 }
 
-               if (st->codecpar->extradata_size < language_count * 2)
-                   return AVERROR_INVALIDDATA;
+                if (st->codecpar->extradata_size < language_count * 2)
+                    return AVERROR_INVALIDDATA;
 
-               extradata = st->codecpar->extradata;
+                extradata = st->codecpar->extradata;
 
                 for (i = 0; i < language_count; i++) {
                     language[i * 4 + 0] = get8(pp, desc_end);
@@ -1970,14 +1983,14 @@ static void pmt_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
     p = section;
     if (parse_section_header(h, &p, p_end) < 0)
         return;
+    if (h->tid != PMT_TID)
+        return;
     if (skip_identical(h, tssf))
         return;
 
     av_log(ts->stream, AV_LOG_TRACE, "sid=0x%x sec_num=%d/%d version=%d tid=%d\n",
             h->id, h->sec_num, h->last_sec_num, h->version, h->tid);
 
-    if (h->tid != PMT_TID)
-        return;
     if (!ts->scan_all_pmts && ts->skip_changes)
         return;
 
@@ -2285,13 +2298,12 @@ static int parse_pcr(int64_t *ppcr_high, int *ppcr_low,
                      const uint8_t *packet);
 
 /* handle one TS packet */
-static int handle_packet(MpegTSContext *ts, const uint8_t *packet)
+static int handle_packet(MpegTSContext *ts, const uint8_t *packet, int64_t pos)
 {
     MpegTSFilter *tss;
     int len, pid, cc, expected_cc, cc_ok, afc, is_start, is_discontinuity,
         has_adaptation, has_payload;
     const uint8_t *p, *p_end;
-    int64_t pos;
 
     pid = AV_RB16(packet + 1) & 0x1fff;
     if (pid && discard_pid(ts, pid))
@@ -2356,7 +2368,6 @@ static int handle_packet(MpegTSContext *ts, const uint8_t *packet)
     if (p >= p_end || !has_payload)
         return 0;
 
-    pos = avio_tell(ts->stream->pb);
     if (pos >= 0) {
         av_assert0(pos >= TS_PACKET_SIZE);
         ts->pos47_full = pos - TS_PACKET_SIZE;
@@ -2464,14 +2475,15 @@ static int mpegts_resync(AVFormatContext *s, int seekback, const uint8_t *curren
     AVIOContext *pb = s->pb;
     int c, i;
     uint64_t pos = avio_tell(pb);
-
-    avio_seek(pb, -FFMIN(seekback, pos), SEEK_CUR);
+    int64_t back = FFMIN(seekback, pos);
 
     //Special case for files like 01c56b0dc1.ts
     if (current_packet[0] == 0x80 && current_packet[12] == 0x47) {
-        avio_seek(pb, 12, SEEK_CUR);
+        avio_seek(pb, 12 - back, SEEK_CUR);
         return 0;
     }
+
+    avio_seek(pb, -back, SEEK_CUR);
 
     for (i = 0; i < ts->resync_size; i++) {
         c = avio_r8(pb);
@@ -2567,7 +2579,7 @@ static int handle_packets(MpegTSContext *ts, int64_t nb_packets)
         ret = read_packet(s, packet, ts->raw_packet_size, &data);
         if (ret != 0)
             break;
-        ret = handle_packet(ts, data);
+        ret = handle_packet(ts, data, avio_tell(s->pb));
         finished_reading_packet(s, ts->raw_packet_size);
         if (ret != 0)
             break;
@@ -2964,7 +2976,7 @@ int avpriv_mpegts_parse_packet(MpegTSContext *ts, AVPacket *pkt,
             buf++;
             len--;
         } else {
-            handle_packet(ts, buf);
+            handle_packet(ts, buf, len1 - len + TS_PACKET_SIZE);
             buf += TS_PACKET_SIZE;
             len -= TS_PACKET_SIZE;
             if (ts->stop_parse == 1)
