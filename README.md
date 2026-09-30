@@ -1,6 +1,21 @@
 FFmpeg README
 =============
 
+## IJK / GSY Android FFmpeg 5 migration
+
+The `ffmpeg-5.0` branch contains **FFmpeg 5.1.10** with IJK compatibility
+hooks and a multipart-JPEG final-boundary EOF fix. The branch name identifies
+the migration series, not upstream FFmpeg 5.0.
+
+Start with the [migration guide](doc/ijk-ffmpeg5.md) for the pinned source,
+Android build entry points, host tests, and the remaining 16 KB/device/TLS
+validation limits. Android builds use the companion
+[CarGuo/ijkplayer `ffmpeg-5.0` instructions](https://github.com/CarGuo/ijkplayer/blob/ffmpeg-5.0/doc/FFMPEG5.md).
+The [GSY integration guide](https://github.com/CarGuo/GSYVideoPlayer/blob/ffmpeg-5.0/doc/ffmpeg-5.0.md)
+identifies the tested three-ABI library set and its checksums.
+
+## Upstream FFmpeg
+
 FFmpeg is a collection of libraries and tools to process multimedia content
 such as audio, video, subtitles and related metadata.
 
