@@ -1,12 +1,21 @@
 NAME = avformat
 DESC = FFmpeg container format library
 
-HEADERS = avformat.h                                                    \
+IJK_HEADERS += avc.h
+IJK_HEADERS += url.h
+IJK_HEADERS += internal.h
+IJK_HEADERS += avio_internal.h
+IJK_HEADERS += flv.h
+IJK_HEADERS += id3v2.h
+IJK_HEADERS += os_support.h
+IJK_HEADERS += metadata.h
+
+HEADERS = $(IJK_HEADERS) avformat.h                                                    \
           avio.h                                                        \
           version.h                                                     \
           version_major.h                                               \
 
-OBJS = allformats.o         \
+OBJS = ijkutils.o avc.o allformats.o         \
        avformat.o           \
        avio.o               \
        aviobuf.o            \

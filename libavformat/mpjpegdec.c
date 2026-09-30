@@ -32,6 +32,9 @@ typedef struct MPJPEGDemuxContext {
     const AVClass *class;
     char       *boundary;
     char       *searchstr;
+    char       *final_boundary;
+    int         finished;
+    int64_t     final_boundary_pos;
     int         searchstr_len;
     int         strict_mime_boundary;
 } MPJPEGDemuxContext;
@@ -101,13 +104,15 @@ static int split_tag_value(char **tag, char **value, char *line)
 static int parse_multipart_header(AVIOContext *pb,
                                     int* size,
                                     const char* expected_boundary,
-                                    void *log_ctx);
+                                    void *log_ctx,
+                                    const char *final_boundary, int *finished);
 
 static int mpjpeg_read_close(AVFormatContext *s)
 {
     MPJPEGDemuxContext *mpjpeg = s->priv_data;
     av_freep(&mpjpeg->boundary);
     av_freep(&mpjpeg->searchstr);
+    av_freep(&mpjpeg->final_boundary);
     return 0;
 }
 
@@ -122,13 +127,15 @@ static int mpjpeg_read_probe(const AVProbeData *p)
 
     ffio_init_context(&pb, p->buf, p->buf_size, 0, NULL, NULL, NULL, NULL);
 
-    ret = (parse_multipart_header(&pb.pub, &size, "--", NULL) >= 0) ? AVPROBE_SCORE_MAX : 0;
+    ret = (parse_multipart_header(&pb.pub, &size, "--", NULL, NULL, NULL) >= 0)
+          ? AVPROBE_SCORE_MAX : 0;
 
     return ret;
 }
 
 static int mpjpeg_read_header(AVFormatContext *s)
 {
+    MPJPEGDemuxContext *mpjpeg = s->priv_data;
     AVStream *st;
     char boundary[70 + 2 + 1] = {0};
     int64_t pos = avio_tell(s->pb);
@@ -152,6 +159,12 @@ static int mpjpeg_read_header(AVFormatContext *s)
 
     avpriv_set_pts_info(st, 60, 1, 25);
 
+    /* Keep the actual delimiter: permissive matching uses only "--", and
+     * a normal boundary token can itself end in hyphens. */
+    mpjpeg->final_boundary = av_asprintf("%s--", boundary);
+    if (!mpjpeg->final_boundary)
+        return AVERROR(ENOMEM);
+
     avio_seek(s->pb, pos, SEEK_SET);
 
     return 0;
@@ -171,7 +184,8 @@ static int parse_content_length(const char *value)
 static int parse_multipart_header(AVIOContext *pb,
                             int* size,
                             const char* expected_boundary,
-                            void *log_ctx)
+                            void *log_ctx,
+                            const char *final_boundary, int *finished)
 {
     char line[128];
     int found_content_type = 0;
@@ -202,6 +216,12 @@ static int parse_multipart_header(AVIOContext *pb,
             strlen(line));
 
         return AVERROR_INVALIDDATA;
+    }
+
+    /* A closing delimiter has no MIME part headers after it. */
+    if (final_boundary && !strcmp(line, final_boundary)) {
+        *finished = 1;
+        return AVERROR_EOF;
     }
 
     while (!pb->eof_reached) {
@@ -296,6 +316,13 @@ static int mpjpeg_read_packet(AVFormatContext *s, AVPacket *pkt)
     int ret;
 
     MPJPEGDemuxContext *mpjpeg = s->priv_data;
+    if (mpjpeg->finished) {
+        /* A generic byte seek must allow replay on this demuxer instance. */
+        if (avio_tell(s->pb) == mpjpeg->final_boundary_pos)
+            return AVERROR_EOF;
+        mpjpeg->finished = 0;
+    }
+
     if (mpjpeg->boundary == NULL) {
         uint8_t* boundary = NULL;
         if (mpjpeg->strict_mime_boundary) {
@@ -317,7 +344,10 @@ static int mpjpeg_read_packet(AVFormatContext *s, AVPacket *pkt)
         mpjpeg->searchstr_len = strlen(mpjpeg->searchstr);
     }
 
-    ret = parse_multipart_header(s->pb, &size, mpjpeg->boundary, s);
+    ret = parse_multipart_header(s->pb, &size, mpjpeg->boundary, s,
+                                 mpjpeg->final_boundary, &mpjpeg->finished);
+    if (mpjpeg->finished)
+        mpjpeg->final_boundary_pos = avio_tell(s->pb);
 
 
     if (ret < 0)

@@ -19,6 +19,8 @@
  */
 
 #include <string.h>
+#include <errno.h>
+#include <inttypes.h>
 
 #include "avstring.h"
 #include "dict.h"
@@ -151,6 +153,40 @@ int av_dict_set_int(AVDictionary **pm, const char *key, int64_t value,
     snprintf(valuestr, sizeof(valuestr), "%"PRId64, value);
     flags &= ~AV_DICT_DONT_STRDUP_VAL;
     return av_dict_set(pm, key, valuestr, flags);
+}
+
+int av_dict_set_intptr(AVDictionary **pm, const char *key, uintptr_t value, int flags)
+{
+    char valuestr[2 + 2 * sizeof(uintptr_t) + 1];
+    snprintf(valuestr, sizeof(valuestr), "0x%"PRIxPTR, value);
+    flags &= ~AV_DICT_DONT_STRDUP_VAL;
+    return av_dict_set(pm, key, valuestr, flags);
+}
+
+uintptr_t av_dict_get_intptr(const AVDictionary *m, const char *key)
+{
+    AVDictionaryEntry *entry = av_dict_get(m, key, NULL, 0);
+    return entry ? av_dict_strtoptr(entry->value) : 0;
+}
+
+uintptr_t av_dict_strtoptr(char *value)
+{
+    uintmax_t parsed;
+    char *next;
+    if (!value || value[0] != '0' || (value[1] | 0x20) != 'x')
+        return 0;
+    errno = 0;
+    parsed = strtoumax(value, &next, 16);
+    if (errno == ERANGE || next == value || *next || parsed > UINTPTR_MAX)
+        return 0;
+    return (uintptr_t)parsed;
+}
+
+char *av_dict_ptrtostr(uintptr_t value)
+{
+    char valuestr[2 + 2 * sizeof(uintptr_t) + 1];
+    snprintf(valuestr, sizeof(valuestr), "0x%"PRIxPTR, value);
+    return av_strdup(valuestr);
 }
 
 static int parse_key_value_pair(AVDictionary **pm, const char **buf,

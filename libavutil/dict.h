@@ -135,6 +135,12 @@ int av_dict_set(AVDictionary **pm, const char *key, const char *value, int flags
  */
 int av_dict_set_int(AVDictionary **pm, const char *key, int64_t value, int flags);
 
+/* ijkplayer pointer-valued options. Returned strings are freed with av_free(). */
+int av_dict_set_intptr(AVDictionary **pm, const char *key, uintptr_t value, int flags);
+uintptr_t av_dict_get_intptr(const AVDictionary *m, const char *key);
+uintptr_t av_dict_strtoptr(char *value);
+char *av_dict_ptrtostr(uintptr_t value);
+
 /**
  * Parse the key/value pairs list and add the parsed entries to a dictionary.
  *

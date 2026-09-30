@@ -498,6 +498,8 @@ extern const AVInputFormat  ff_xmv_demuxer;
 extern const AVInputFormat  ff_xvag_demuxer;
 extern const AVInputFormat  ff_xwma_demuxer;
 extern const AVInputFormat  ff_yop_demuxer;
+extern AVInputFormat ff_ijklivehook_demuxer;
+extern AVInputFormat ff_ijklas_demuxer;
 extern const AVInputFormat  ff_yuv4mpegpipe_demuxer;
 extern const AVOutputFormat ff_yuv4mpegpipe_muxer;
 /* image demuxers */
