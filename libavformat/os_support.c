@@ -80,7 +80,7 @@ int ff_getaddrinfo(const char *node, const char *service,
         if (!inet_aton(node, &sin->sin_addr)) {
             if (hints && (hints->ai_flags & AI_NUMERICHOST)) {
                 av_free(sin);
-                return EAI_FAIL;
+                return EAI_NONAME;
             }
             h = gethostbyname(node);
             if (!h) {
