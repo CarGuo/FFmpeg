@@ -14,6 +14,12 @@ validation limits. Android builds use the companion
 The [GSY integration guide](https://github.com/CarGuo/GSYVideoPlayer/blob/ffmpeg-5.0/doc/ffmpeg-5.0.md)
 identifies the tested three-ABI library set and its checksums.
 
+The recovered MOV/HEVC sample-description seek-replay change and its regression
+files are included. See the [2026-10-04 Android integration verification](doc/ijk-ffmpeg5-recovery.md)
+for exact source/binary identity, passed physical ARM64 playback scope, ABI limits
+and the preserved historical recovery record. Playback-rate and EOF-clock fixes
+are in the companion IJK integration; the FFmpeg libraries remain byte-identical.
+
 ## Upstream FFmpeg
 
 FFmpeg is a collection of libraries and tools to process multimedia content

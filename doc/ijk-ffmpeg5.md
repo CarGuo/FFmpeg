@@ -1,16 +1,20 @@
+> Current Android integration status and exact binary identities are in the
+> [2026-10-04 verification note](ijk-ffmpeg5-recovery.md). The dated checks below
+> remain historical; they do not override that explicitly bounded current scope.
+
 # IJK / GSY Android migration to FFmpeg 5.1.10
 
 The `ffmpeg-5.0` branch is the Android migration series. Its actual FFmpeg base
 is **n5.1.10**, upstream commit
 `19feb712f5c1821d8a3fa1ad63c5bd2e3b9672eb`.
-The published repaired four-patch source commit, selected by the companion
-IJK initializer update, is
+The prior **2026-10-01** four-patch source pin was
 [`5d01026835e0fc18be967461df180432e85db0c7`](https://github.com/CarGuo/FFmpeg/commit/5d01026835e0fc18be967461df180432e85db0c7).
-All four patch reverse-checks pass against this exact commit. The historical
-two-patch pin was `4a62cc600696982f189fbad6c6ea1593e909b814`; it is not the
-repaired build input. Documentation commits can advance the discovery branch
-without changing this immutable source pin. A complete fresh companion
-initializer run with the new pin has not yet been rerun.
+That dated checkpoint preceded the fifth MOV/HEVC seek-replay repair. For the
+current immutable published pin, use the companion
+[IJK initializer](https://github.com/CarGuo/ijkplayer/blob/ffmpeg-5.0/init-android-ffmpeg5.sh)
+and [current verification note](ijk-ffmpeg5-recovery.md). The discovery branch
+may advance for documentation; the initializer's immutable commit is the source
+identity. The remaining 2026-10-01 status below is retained as historical evidence.
 
 ## Release-remediation status (2026-10-01)
 

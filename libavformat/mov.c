@@ -8662,12 +8662,11 @@ static int mov_change_extradata(MOVStreamContext *sc, AVPacket *pkt)
     uint8_t *side, *extradata;
     int extradata_size;
 
-    /* Save the current index. */
-    sc->last_stsd_index = sc->stsc_data[sc->stsc_index].id - 1;
+    int stsd_index = sc->stsc_data[sc->stsc_index].id - 1;
 
     /* Notify the decoder that extradata changed. */
-    extradata_size = sc->extradata_size[sc->last_stsd_index];
-    extradata = sc->extradata[sc->last_stsd_index];
+    extradata_size = sc->extradata_size[stsd_index];
+    extradata = sc->extradata[stsd_index];
     if (extradata_size > 0 && extradata) {
         side = av_packet_new_side_data(pkt,
                                        AV_PKT_DATA_NEW_EXTRADATA,
@@ -8677,6 +8676,7 @@ static int mov_change_extradata(MOVStreamContext *sc, AVPacket *pkt)
         memcpy(side, extradata, extradata_size);
     }
 
+    sc->last_stsd_index = stsd_index;
     return 0;
 }
 
@@ -8957,6 +8957,43 @@ static int can_seek_to_key_sample(AVStream *st, int sample, int64_t requested_pt
     return 1;
 }
 
+static void mov_seek_stsc(MOVStreamContext *sc, int sample)
+{
+    int time_sample = 0;
+    unsigned int i;
+
+    if (!sc->chunk_count)
+        return;
+    for (i = 0; i < sc->stsc_count; i++) {
+        int64_t next = time_sample + mov_get_stsc_samples(sc, i);
+        if (next > sample) {
+            sc->stsc_index = i;
+            sc->stsc_sample = sample - time_sample;
+            break;
+        }
+        av_assert0(next == (int)next);
+        time_sample = next;
+    }
+}
+
+static void mov_seek_hevc_extradata(AVStream *st, int seek_individually)
+{
+    MOVStreamContext *sc = st->priv_data;
+
+    /* Replay only descriptions selectable by mov_read_packet's stsc path.
+     * Fragment-only tracks use tfhd instead, and exhausted tracks have no
+     * next sample whose description could be selected. */
+    if (st->codecpar->codec_id != AV_CODEC_ID_HEVC || sc->stsd_count <= 1 ||
+        !sc->chunk_count || !sc->stsc_count || !sc->stsc_data ||
+        sc->current_sample < 0 || sc->current_sample >= ffstream(st)->nb_index_entries)
+        return;
+    /* The interleaved seek path advances sample cursors without visiting
+     * mov_seek_stream for every track. Re-select each track's description. */
+    if (!seek_individually)
+        mov_seek_stsc(sc, sc->current_sample);
+    sc->last_stsd_index = -1;
+}
+
 static int mov_seek_stream(AVFormatContext *s, AVStream *st, int64_t timestamp, int flags)
 {
     MOVStreamContext *sc = st->priv_data;
@@ -9002,19 +9039,7 @@ static int mov_seek_stream(AVFormatContext *s, AVStream *st, int64_t timestamp, 
     }
 
     /* adjust stsd index */
-    if (sc->chunk_count) {
-        time_sample = 0;
-        for (i = 0; i < sc->stsc_count; i++) {
-            int64_t next = time_sample + mov_get_stsc_samples(sc, i);
-            if (next > sc->current_sample) {
-                sc->stsc_index = i;
-                sc->stsc_sample = sc->current_sample - time_sample;
-                break;
-            }
-            av_assert0(next == (int)next);
-            time_sample = next;
-        }
-    }
+    mov_seek_stsc(sc, sc->current_sample);
 
     return sample;
 }
@@ -9089,6 +9114,9 @@ static int mov_read_seek(AVFormatContext *s, int stream_index, int64_t sample_ti
             mov_current_sample_inc(sc);
         }
     }
+    for (i = 0; i < s->nb_streams; i++)
+        mov_seek_hevc_extradata(s->streams[i], mc->seek_individually);
+
     return 0;
 }
 
