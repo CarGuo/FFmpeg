@@ -521,13 +521,13 @@ int ff_rtsp_parse_streaming_commands(AVFormatContext *s)
     return ret;
 }
 
-static int rtsp_read_play(AVFormatContext *s)
+static int rtsp_read_play_reply(AVFormatContext *s, RTSPMessageHeader *reply)
 {
     RTSPState *rt = s->priv_data;
-    RTSPMessageHeader reply1, *reply = &reply1;
-    int i;
+    int i, ret;
     char cmd[MAX_URL_SIZE];
 
+    memset(reply, 0, sizeof(*reply));
     av_log(s, AV_LOG_DEBUG, "hello state=%d\n", rt->state);
     rt->nb_byes = 0;
 
@@ -567,7 +567,9 @@ static int rtsp_read_play(AVFormatContext *s)
                      rt->seek_timestamp / AV_TIME_BASE,
                      rt->seek_timestamp / (AV_TIME_BASE / 1000) % 1000);
         }
-        ff_rtsp_send_cmd(s, "PLAY", rt->control_uri, cmd, reply, NULL);
+        ret = ff_rtsp_send_cmd(s, "PLAY", rt->control_uri, cmd, reply, NULL);
+        if (ret < 0)
+            return ret;
         if (reply->status_code != RTSP_STATUS_OK) {
             return ff_rtsp_averror(reply->status_code, -1);
         }
@@ -592,6 +594,12 @@ static int rtsp_read_play(AVFormatContext *s)
 }
 
 /* pause the stream */
+static int rtsp_read_play(AVFormatContext *s)
+{
+    RTSPMessageHeader reply;
+    return rtsp_read_play_reply(s, &reply);
+}
+
 static int rtsp_read_pause(AVFormatContext *s)
 {
     RTSPState *rt = s->priv_data;
@@ -628,7 +636,11 @@ int ff_rtsp_setup_input_streams(AVFormatContext *s, RTSPMessageHeader *reply)
                    "Require: com.real.retain-entity-for-setup\r\n",
                    sizeof(cmd));
     }
-    ff_rtsp_send_cmd(s, "DESCRIBE", rt->control_uri, cmd, reply, &content);
+    ret = ff_rtsp_send_cmd(s, "DESCRIBE", rt->control_uri, cmd, reply, &content);
+    if (ret < 0) {
+        av_freep(&content);
+        return ret;
+    }
     if (reply->status_code != RTSP_STATUS_OK) {
         av_freep(&content);
         return ff_rtsp_averror(reply->status_code, AVERROR_INVALIDDATA);
@@ -742,8 +754,11 @@ static int rtsp_probe(const AVProbeData *p)
 static int rtsp_read_header(AVFormatContext *s)
 {
     RTSPState *rt = s->priv_data;
+    RTSPMessageHeader reply;
     int ret;
+    const int initial_transport_mask = rt->lower_transport_mask;
 
+    rt->nb_redirects = 0;
     if (rt->initial_timeout > 0)
         rt->rtsp_flags |= RTSP_FLAG_LISTEN;
 
@@ -752,6 +767,7 @@ static int rtsp_read_header(AVFormatContext *s)
         if (ret)
             return ret;
     } else {
+retry:
         ret = ff_rtsp_connect(s);
         if (ret)
             return ret;
@@ -767,9 +783,18 @@ static int rtsp_read_header(AVFormatContext *s)
         if (rt->initial_pause) {
             /* do not start immediately */
         } else {
-            ret = rtsp_read_play(s);
-            if (ret < 0)
+            ret = rtsp_read_play_reply(s, &reply);
+            if (ret < 0) {
+                if (reply.status_code >= 300 && reply.status_code < 400) {
+                    rtsp_read_close(s);
+                    ret = ff_rtsp_apply_redirect(s, &reply);
+                    if (ret < 0)
+                        return ret;
+                    rt->lower_transport_mask = initial_transport_mask;
+                    goto retry;
+                }
                 goto fail;
+            }
         }
     }
 
@@ -840,7 +865,7 @@ static int resetup_tcp(AVFormatContext *s)
                  s->url);
     ff_rtsp_undo_setup(s, 0);
     return ff_rtsp_make_setup_request(s, host, port, RTSP_LOWER_TRANSPORT_TCP,
-                                      rt->real_challenge);
+                                      rt->real_challenge, NULL);
 }
 
 static int rtsp_read_packet(AVFormatContext *s, AVPacket *pkt)

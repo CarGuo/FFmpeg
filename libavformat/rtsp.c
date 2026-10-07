@@ -814,11 +814,14 @@ void ff_rtsp_close_streams(AVFormatContext *s)
         }
     }
     av_freep(&rt->rtsp_streams);
+    rt->nb_rtsp_streams = 0;
     if (rt->asf_ctx) {
         avformat_close_input(&rt->asf_ctx);
     }
     if (CONFIG_RTPDEC && rt->ts)
         avpriv_mpegts_parse_close(rt->ts);
+    rt->ts = NULL;
+    rt->cur_transport_priv = NULL;
     av_freep(&rt->p);
     av_freep(&rt->recvbuf);
 }
@@ -1451,16 +1454,19 @@ retry:
 }
 
 int ff_rtsp_make_setup_request(AVFormatContext *s, const char *host, int port,
-                              int lower_transport, const char *real_challenge)
+                              int lower_transport, const char *real_challenge,
+                              RTSPMessageHeader *reply)
 {
     RTSPState *rt = s->priv_data;
     int rtx = 0, j, i, err, interleave = 0, port_off = 0;
     RTSPStream *rtsp_st;
-    RTSPMessageHeader reply1, *reply = &reply1;
+    RTSPMessageHeader reply1;
     char cmd[MAX_URL_SIZE];
     const char *trans_pref;
 
-    memset(&reply1, 0, sizeof(reply1));
+    if (!reply)
+        reply = &reply1;
+    memset(reply, 0, sizeof(*reply));
 
     if (rt->transport == RTSP_TRANSPORT_RDT)
         trans_pref = "x-pn-tng";
@@ -1600,7 +1606,9 @@ int ff_rtsp_make_setup_request(AVFormatContext *s, const char *host, int port,
                         "RealChallenge2: %s, sd=%s\r\n",
                         rt->session_id, real_res, real_csum);
         }
-        ff_rtsp_send_cmd(s, "SETUP", rtsp_st->control_url, cmd, reply, NULL);
+        err = ff_rtsp_send_cmd(s, "SETUP", rtsp_st->control_url, cmd, reply, NULL);
+        if (err < 0)
+            goto fail;
         if (reply->status_code == 461 /* Unsupported protocol */ && i == 0) {
             err = 1;
             goto fail;
@@ -1722,6 +1730,69 @@ void ff_rtsp_close_connections(AVFormatContext *s)
     ffurl_closep(&rt->rtsp_hd);
 }
 
+/* RFC 2326 redirects use an absolute Location URI. A relative Location is
+ * not guessed here: changing it silently can select a different camera. */
+int ff_rtsp_apply_redirect(AVFormatContext *s, const RTSPMessageHeader *reply)
+{
+    RTSPState *rt = s->priv_data;
+    char old_proto[16], new_proto[16], old_host[1024], new_host[1024];
+    char new_auth[128];
+    char *new_url;
+    int old_port, new_port;
+
+    if (ff_check_interrupt(&s->interrupt_callback))
+        return AVERROR_EXIT;
+    if (reply->status_code < 300 || reply->status_code >= 400 ||
+        reply->status_code == 304 || reply->status_code == 305 ||
+        !reply->location[0])
+        return AVERROR_INVALIDDATA;
+    if (rt->nb_redirects >= 8) {
+        av_log(s, AV_LOG_ERROR, "Too many RTSP redirects\n");
+        return AVERROR(ELOOP);
+    }
+    av_url_split(old_proto, sizeof(old_proto), NULL, 0,
+                 old_host, sizeof(old_host), &old_port, NULL, 0, s->url);
+    av_url_split(new_proto, sizeof(new_proto), new_auth, sizeof(new_auth),
+                 new_host, sizeof(new_host), &new_port, NULL, 0, reply->location);
+    if ((strcmp(new_proto, "rtsp") && strcmp(new_proto, "rtsps")) ||
+        !new_host[0] || new_port == 0 || new_port > 65535)
+        return AVERROR_INVALIDDATA;
+    if (old_port < 0)
+        old_port = !strcmp(old_proto, "rtsps") ? RTSPS_DEFAULT_PORT : RTSP_DEFAULT_PORT;
+    if (new_port < 0)
+        new_port = !strcmp(new_proto, "rtsps") ? RTSPS_DEFAULT_PORT : RTSP_DEFAULT_PORT;
+    new_url = av_strdup(reply->location);
+    if (!new_url)
+        return AVERROR(ENOMEM);
+
+    /* A different port is a different origin, even on the same host. */
+    if (strcmp(old_proto, new_proto) || av_strcasecmp(old_host, new_host) ||
+        old_port != new_port || (new_auth[0] && strcmp(rt->auth, new_auth))) {
+        rt->auth[0] = '\0';
+        memset(&rt->auth_state, 0, sizeof(rt->auth_state));
+    }
+    ff_format_set_url(s, new_url);
+    rt->session_id[0] = '\0';
+    rt->get_parameter_supported = 0;
+    rt->nb_redirects++;
+    /* DESCRIBE has already allocated streams when SETUP/PLAY redirects. */
+    while (s->nb_streams)
+        ff_free_stream(&s->streams[--s->nb_streams]);
+    av_freep(&s->streams);
+    s->duration = AV_NOPTS_VALUE;
+    s->start_time = AV_NOPTS_VALUE;
+    s->start_time_realtime = AV_NOPTS_VALUE;
+    s->ctx_flags &= ~AVFMTCTX_NOHEADER;
+    /* Only these format metadata keys are populated by SDP parsing. Keep
+     * caller metadata and options, e.g. skip-calc-frame-rate, untouched. */
+    av_dict_set(&s->metadata, "title", NULL, 0);
+    av_dict_set(&s->metadata, "comment", NULL, 0);
+    rt->default_lang[0] = '\0';
+    av_log(s, AV_LOG_INFO, "Following RTSP redirect %d (status %d)\n",
+           rt->nb_redirects, reply->status_code);
+    return 0;
+}
+
 int ff_rtsp_connect(AVFormatContext *s)
 {
     RTSPState *rt = s->priv_data;
@@ -1761,6 +1832,13 @@ int ff_rtsp_connect(AVFormatContext *s)
     rt->lower_transport_mask &= (1 << RTSP_LOWER_TRANSPORT_NB) - 1;
 
 redirect:
+    lower_rtsp_proto = "tcp";
+    default_port = RTSP_DEFAULT_PORT;
+    peer_len = sizeof(peer);
+    if (ff_check_interrupt(&s->interrupt_callback)) {
+        err = AVERROR_EXIT;
+        goto fail2;
+    }
     memset(&reply1, 0, sizeof(reply1));
     /* extract hostname and port */
     av_url_split(proto, sizeof(proto), auth, sizeof(auth),
@@ -1950,7 +2028,9 @@ redirect:
                        "CompanyID: KnKV4M4I/B2FjJ1TToLycw==\r\n"
                        "GUID: 00000000-0000-0000-0000-000000000000\r\n",
                        sizeof(cmd));
-        ff_rtsp_send_cmd(s, "OPTIONS", rt->control_uri, cmd, reply, NULL);
+        err = ff_rtsp_send_cmd(s, "OPTIONS", rt->control_uri, cmd, reply, NULL);
+        if (err < 0)
+            goto fail;
         if (reply->status_code != RTSP_STATUS_OK) {
             err = ff_rtsp_averror(reply->status_code, AVERROR_INVALIDDATA);
             goto fail;
@@ -1992,7 +2072,7 @@ redirect:
 
         err = ff_rtsp_make_setup_request(s, host, port, lower_transport,
                                  rt->server_type == RTSP_SERVER_REAL ?
-                                     real_challenge : NULL);
+                                     real_challenge : NULL, reply);
         if (err < 0)
             goto fail;
         lower_transport_mask &= ~(1 << lower_transport);
@@ -2010,18 +2090,10 @@ redirect:
  fail:
     ff_rtsp_close_streams(s);
     ff_rtsp_close_connections(s);
-    if (reply->status_code >=300 && reply->status_code < 400 && s->iformat) {
-        char *new_url = av_strdup(reply->location);
-        if (!new_url) {
-            err = AVERROR(ENOMEM);
-            goto fail2;
-        }
-        ff_format_set_url(s, new_url);
-        rt->session_id[0] = '\0';
-        av_log(s, AV_LOG_INFO, "Status %d: Redirecting to %s\n",
-               reply->status_code,
-               s->url);
-        goto redirect;
+    if (reply->status_code >= 300 && reply->status_code < 400 && s->iformat) {
+        err = ff_rtsp_apply_redirect(s, reply);
+        if (err >= 0)
+            goto redirect;
     }
  fail2:
     ff_network_close();

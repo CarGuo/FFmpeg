@@ -247,6 +247,9 @@ typedef struct RTSPState {
 
     int seq;                          /**< RTSP command sequence number */
 
+    /** Redirects followed during this input open (including initial PLAY). */
+    int nb_redirects;
+
     /** copy of RTSPMessageHeader->session_id, i.e. the server-provided session
      * identifier that the client should re-transmit in each RTSP command */
     char session_id[512];
@@ -636,7 +639,11 @@ int ff_rtsp_fetch_packet(AVFormatContext *s, AVPacket *pkt);
  * @return 0 on success, <0 on error, 1 if protocol is unavailable
  */
 int ff_rtsp_make_setup_request(AVFormatContext *s, const char *host, int port,
-                               int lower_transport, const char *real_challenge);
+                               int lower_transport, const char *real_challenge,
+                               RTSPMessageHeader *reply);
+
+/** Follow an input redirect after closing the previous session. */
+int ff_rtsp_apply_redirect(AVFormatContext *s, const RTSPMessageHeader *reply);
 
 /**
  * Undo the effect of ff_rtsp_make_setup_request, close the
