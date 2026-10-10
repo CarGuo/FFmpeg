@@ -38,6 +38,14 @@
 void ff_http_init_auth_state(URLContext *dest, const URLContext *src);
 
 /**
+ * Copy explicitly supplied TLS options from an HTTP(S) context for nested
+ * resource opens. Other protocols and NULL contexts are ignored. Options keep
+ * their original order so aliases retain the same precedence as the first open.
+ * Returns zero on success or a negative error code on allocation failure.
+ */
+int ff_http_copy_tls_options(const URLContext *h, AVDictionary **options);
+
+/**
  * Send a new HTTP request, reusing the old connection.
  *
  * @param h pointer to the resource

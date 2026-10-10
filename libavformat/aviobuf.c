@@ -19,6 +19,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "config_components.h"
 #include "libavutil/bprint.h"
 #include "libavutil/crc.h"
 #include "libavutil/dict.h"
@@ -30,6 +31,7 @@
 #include "libavcodec/defs.h"
 #include "avio.h"
 #include "avio_internal.h"
+#include "http.h"
 #include "internal.h"
 #include "url.h"
 #include <stdarg.h>
@@ -1029,8 +1031,12 @@ int ffio_copy_url_options(AVIOContext* pb, AVDictionary** avio_opts)
     int ret = 0;
 
     while (*opt) {
-        if (av_opt_get(pb, *opt, AV_OPT_SEARCH_CHILDREN, &buf) >= 0) {
-            if (buf[0] != '\0') {
+        int err = av_opt_get(pb, *opt, AV_OPT_SEARCH_CHILDREN | AV_OPT_ALLOW_NULL, &buf);
+        if (err < 0 && err != AVERROR_OPTION_NOT_FOUND)
+            return err;
+        if (err >= 0) {
+            /* An empty proxy explicitly disables the environment proxy. */
+            if (buf && (buf[0] != '\0' || !strcmp(*opt, "http_proxy"))) {
                 ret = av_dict_set(avio_opts, *opt, buf, AV_DICT_DONT_STRDUP_VAL);
                 if (ret < 0)
                     return ret;
@@ -1040,6 +1046,12 @@ int ffio_copy_url_options(AVIOContext* pb, AVDictionary** avio_opts)
         }
         opt++;
     }
+
+#if CONFIG_HTTP_PROTOCOL || CONFIG_HTTPS_PROTOCOL
+    /* TLS options belong to HTTP's saved lower-protocol options, not its
+     * AVOption children. Keep the caller's settings across nested opens. */
+    ret = ff_http_copy_tls_options(ffio_geturlcontext(pb), avio_opts);
+#endif
 
     return ret;
 }

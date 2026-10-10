@@ -691,8 +691,9 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
     else if (strcmp(proto_name, "file") || !strncmp(url, "file,", 5))
         return AVERROR_INVALIDDATA;
 
-    av_dict_copy(&tmp, *opts, 0);
-    av_dict_copy(&tmp, opts2, 0);
+    if ((ret = av_dict_copy(&tmp, *opts, 0)) < 0 ||
+        (ret = av_dict_copy(&tmp, opts2, 0)) < 0)
+        goto cleanup;
 
     if (is_http && c->http_persistent && *pb) {
         ret = open_url_keepalive(c->ctx, pb, url, &tmp);
@@ -704,8 +705,10 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
                 av_log(s, AV_LOG_WARNING,
                     "keepalive request failed for '%s' with error: '%s' when opening url, retrying with new connection\n",
                     url, av_err2str(ret));
-            av_dict_copy(&tmp, *opts, 0);
-            av_dict_copy(&tmp, opts2, 0);
+            av_dict_free(&tmp);
+            if ((ret = av_dict_copy(&tmp, *opts, 0)) < 0 ||
+                (ret = av_dict_copy(&tmp, opts2, 0)) < 0)
+                goto cleanup;
             ret = s->io_open(s, pb, url, AVIO_FLAG_READ, &tmp);
         }
     } else {
@@ -722,6 +725,7 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
             av_dict_set(opts, "cookies", new_cookies, AV_DICT_DONT_STRDUP_VAL);
     }
 
+cleanup:
     av_dict_free(&tmp);
 
     if (is_http_out)
@@ -813,7 +817,10 @@ static int parse_playlist(HLSContext *c, const char *url,
 
     if (!in) {
         AVDictionary *opts = NULL;
-        av_dict_copy(&opts, c->avio_opts, 0);
+        if ((ret = av_dict_copy(&opts, c->avio_opts, 0)) < 0) {
+            av_dict_free(&opts);
+            return ret;
+        }
 
         if (c->http_persistent)
             av_dict_set(&opts, "multiple_requests", "1", 0);

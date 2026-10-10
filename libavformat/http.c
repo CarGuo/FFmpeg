@@ -199,6 +199,30 @@ void ff_http_init_auth_state(URLContext *dest, const URLContext *src)
            sizeof(HTTPAuthState));
 }
 
+int ff_http_copy_tls_options(const URLContext *h, AVDictionary **options)
+{
+    const HTTPContext *s;
+    const AVDictionaryEntry *e = NULL;
+    int ret;
+
+    if (!h || !h->prot ||
+        (strcmp(h->prot->name, "http") && strcmp(h->prot->name, "https")))
+        return 0;
+
+    s = h->priv_data;
+    /* Do not export every chained option: the initial open can also carry
+     * demuxer options. In particular, listen must not affect nested opens. */
+    while ((e = av_dict_get(s->chained_options, "", e, AV_DICT_IGNORE_SUFFIX))) {
+        if (strcmp(e->key, "tls_verify") && strcmp(e->key, "ca_file") &&
+            strcmp(e->key, "cafile") && strcmp(e->key, "verifyhost") &&
+            strcmp(e->key, "cert_file") && strcmp(e->key, "key_file"))
+            continue;
+        if ((ret = av_dict_set(options, e->key, e->value, 0)) < 0)
+            return ret;
+    }
+    return 0;
+}
+
 static int http_open_cnx_internal(URLContext *h, AVDictionary **options)
 {
     const char *path, *proxy_path, *lower_proto = "tcp", *local_path;
@@ -354,6 +378,23 @@ static int redirect_cache_set(HTTPContext *s, const char *source, const char *de
     return 0;
 }
 
+static int http_restore_options(HTTPContext *s, AVDictionary **options)
+{
+    AVDictionary *tmp = NULL;
+    int ret;
+
+    /* Build a fresh dictionary: replacing existing entries in-place can
+     * reorder aliases such as ca_file/cafile and change their precedence. */
+    if ((ret = av_dict_copy(&tmp, s->chained_options, 0)) < 0 ||
+        (ret = av_dict_copy(&tmp, *options, AV_DICT_DONT_OVERWRITE)) < 0) {
+        av_dict_free(&tmp);
+        return ret;
+    }
+    av_dict_free(options);
+    *options = tmp;
+    return 0;
+}
+
 /* return non zero if error */
 static int http_open_cnx(URLContext *h, AVDictionary **options)
 {
@@ -380,7 +421,8 @@ redo:
         goto redo;
     }
 
-    av_dict_copy(options, s->chained_options, 0);
+    if ((ret = http_restore_options(s, options)) < 0)
+        goto fail;
 
     cur_auth_type       = s->auth_state.auth_type;
     cur_proxy_auth_type = s->auth_state.auth_type;
@@ -708,8 +750,8 @@ static int http_open(URLContext *h, const char *uri, int flags,
     if (!s->uri)
         return AVERROR(ENOMEM);
 
-    if (options)
-        av_dict_copy(&s->chained_options, *options, 0);
+    if (options && (ret = av_dict_copy(&s->chained_options, *options, 0)) < 0)
+        goto bail_out;
 
     if (s->headers) {
         int len = strlen(s->headers);
